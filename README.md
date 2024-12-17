@@ -213,7 +213,178 @@ _No response_
 
 Add a check to the `TaxTokenReceipt` NFT that ensures that an auction is active (Has an index different than 0 in the `auctionFactoryDebita::AuctionOrderIndex` mapping) and it is part of the `Debita` system (as it is indeed part of the system)
 
-# Issue H-3: After the buyOrder is completed, the order creator does not receive the NFT 
+# Issue H-3: Managed veAERO NFT can be exploited to steal funds from lenders 
+
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/535 
+
+## Found by 
+KaplanLabs, xiaoming90
+### Summary
+
+_No response_
+
+### Root Cause
+
+_No response_
+
+### Internal pre-conditions
+
+_No response_
+
+### External pre-conditions
+
+_No response_
+
+### Attack Path
+
+**Instance 1**
+
+The Aerodrome's [veAERO NFT](https://basescan.org/token/0xebf418fe2512e7e6bd9b87a8f0f294acdc67e6b4#code) can be an unmanaged veNFT OR managed veNFT. A managed veAERO NFT (also called (m)veAERO NFT) operates like a vault that allows users to deposit and withdraw their unmanaged veNFT into the managed veNFT via the [`Voter.depositManaged`](https://basescan.org/address/0x16613524e02ad97eDfeF371bC883F2F5d6C480A5#code#L1302) and [`Voter.withdrawManaged`](https://basescan.org/address/0x16613524e02ad97eDfeF371bC883F2F5d6C480A5#code#L1309) functions. Thus, the locked amount within the (m)veAERO NFT can increase or decrease. 
+
+Bob, the malicious user, owns a (m)veAERO NFT and locks his unmanaged veNFT worth 1,000,000 AERO within it. He then converts it into an NFT receipt and uses it as collateral in his borrow offer. The borrow offer intends to exchange borrow 1,000,000 USDC at the price/ratio of 1 AERO = 1 USDC.
+
+Bob then matches his borrow order against other users' lending orders via the permissionless [`DebitaV3Aggregator.matchOffersV3`](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Aggregator.sol#L274) function himself. A new Loan contract is created, and 1,000,000 USDC is sent to Bob's wallet, and the (m)veAERO NFT is transferred into the Loan contract.
+
+Next, Bob calls the  [`Voter.withdrawManaged`](https://basescan.org/address/0x16613524e02ad97eDfeF371bC883F2F5d6C480A5#code#L1309) function to withdraw his unmanaged veNFT, which is worth 1,000,000 AERO, from the (m)veAERO NFT. As a result, the (m)veAERO NFT collateral within the Loan becomes worthless now.
+
+Bob now holds 1,000,000 USDC and 1,000,000 AERO.
+
+Bob defaults on the Loan, and the (m)veAERO NFT will be auctioned. Since the (m)veAERO NFT is worthless, no one will purchase it, and the lender will not get any funds back and will lose 1,000,000 USDC
+
+**Instance 2**
+
+Any mechanism that relies on NFT receipt will be vulnerable to such an issue by exploiting the managed veNFT.
+
+Another instance that is affected by a similar issue is the [`BuyOrder.sellNFT`](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/buyOrders/buyOrder.sol#L92) function, where the NFT receipt with managed veNFT is placed within a buy order and put up for sale. Once the NFT receipt is sold, the seller can proceed to withdraw all the locked amount within the NFT receipt, leaving the buyer with a worthless NFT receipt. Since the root cause is similar, the attack path will be omitted for brevity.
+
+### Impact
+
+High. Loss of assets for lenders and buyers.
+
+### PoC
+
+_No response_
+
+### Mitigation
+
+_No response_
+
+# Issue H-4: No one can sell `TaxTokensReceipts` NFT receipt to the buy order 
+
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/560 
+
+## Found by 
+0x37, KiroBrejka, bbl4de, dimulski, xiaoming90
+### Summary
+
+_No response_
+
+### Root Cause
+
+_No response_
+
+### Internal pre-conditions
+
+_No response_
+
+### External pre-conditions
+
+_No response_
+
+### Attack Path
+
+The `TaxTokensReceipts` NFT receipt exist to allow FOT to be used within the Debita ecosystem. If users have any tokens that charge a tax/fee on transfer, they must deposit them into the `TaxTokensReceipts` NFT receipt and use the NFT within the Debita ecosystem.
+
+The new Debita protocol has a new feature called ["Buy Order" or "Limit Order"](https://debita-finance.gitbook.io/debita-v3/marketplace/limit-order) that allows users to create buy orders, providing a mechanism for injecting liquidity to purchase specific receipts at predetermined ratios. The receipts include the `TaxTokensReceipts` NFT receipt.
+
+Assume that Bob creates a new Buy Order to purchase `TaxTokensReceipts` NFT receipt. Alice, the holder of `TaxTokensReceipts` NFT receipt, decided to sell it to Bob's Buy Order. Thus, she called the `buyOrder.sellNFT()` function, and Line 99 below will attempt to transfer Alice's `TaxTokensReceipts` NFT receipt to the Buy Order contract.
+
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/buyOrders/buyOrder.sol#L99
+
+```solidity
+File: buyOrder.sol
+092:     function sellNFT(uint receiptID) public {
+093:         require(buyInformation.isActive, "Buy order is not active");
+094:         require(
+095:             buyInformation.availableAmount > 0,
+096:             "Buy order is not available"
+097:         );
+098: 
+099:         IERC721(buyInformation.wantedToken).transferFrom(
+100:             msg.sender,
+101:             address(this),
+102:             receiptID
+103:         );
+```
+
+However, the transfer will always revert because the transfer function has been overwritten, as shown below. The transfer function has been overwritten to only allow the transfer to proceed if the `to` or `from` involves the following three (3) contracts:
+
+1. Borrow Order Contract
+2. Lend Order Contract
+3. Loan Contract
+
+Since neither the Buy Order contract nor the seller (Alice) is the above three contracts, the transfer will always fail. Thus, there is no way for anyone to sell their `TaxTokensReceipts` NFT receipt to the buy order. Thus, this feature is effectively broken.
+
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/Non-Fungible-Receipts/TaxTokensReceipts/TaxTokensReceipt.sol#L98
+
+```solidity
+File: TaxTokensReceipt.sol
+093:     function transferFrom(
+094:         address from,
+095:         address to,
+096:         uint256 tokenId
+097:     ) public virtual override(ERC721, IERC721) {
+098:         bool isReceiverAddressDebita = IBorrowOrderFactory(borrowOrderFactory)
+099:             .isBorrowOrderLegit(to) ||
+100:             ILendOrderFactory(lendOrderFactory).isLendOrderLegit(to) ||
+101:             IAggregator(Aggregator).isSenderALoan(to);
+102:         bool isSenderAddressDebita = IBorrowOrderFactory(borrowOrderFactory)
+103:             .isBorrowOrderLegit(from) ||
+104:             ILendOrderFactory(lendOrderFactory).isLendOrderLegit(from) ||
+105:             IAggregator(Aggregator).isSenderALoan(from);
+106:         // Debita not involved --> revert
+107:         require(
+108:             isReceiverAddressDebita || isSenderAddressDebita,
+109:             "TaxTokensReceipts: Debita not involved"
+110:         );
+```
+
+### Impact
+
+Medium. Core protocol functionality (Buy Order/Limit Order) is broken.
+
+### PoC
+
+_No response_
+
+### Mitigation
+
+Buy Order contract must be authorized to transfer `TaxTokensReceipt` NFT as it is also part of the Debita protocol.
+
+```diff
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) public virtual override(ERC721, IERC721) {
+        bool isReceiverAddressDebita = IBorrowOrderFactory(borrowOrderFactory)
+            .isBorrowOrderLegit(to) ||
+            ILendOrderFactory(lendOrderFactory).isLendOrderLegit(to) ||
++						IBuyOrderFactory(buyOrderFactory).isBuyOrderLegit(to) ||
+            IAggregator(Aggregator).isSenderALoan(to);
+        bool isSenderAddressDebita = IBorrowOrderFactory(borrowOrderFactory)
+            .isBorrowOrderLegit(from) ||
+            ILendOrderFactory(lendOrderFactory).isLendOrderLegit(from) ||
++						IBuyOrderFactory(buyOrderFactory).isBuyOrderLegit(from) ||
+            IAggregator(Aggregator).isSenderALoan(from);
+        // Debita not involved --> revert
+        require(
+            isReceiverAddressDebita || isSenderAddressDebita,
+            "TaxTokensReceipts: Debita not involved"
+        );
+```
+
+# Issue H-5: After the buyOrder is completed, the order creator does not receive the NFT 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/890 
 
@@ -283,101 +454,92 @@ Logs:
 
 After the buyOrder is completed,the NFT should be transferred  to the order creator
 
-# Issue M-1: NFR Collateral could be locked inside the auction contract indefinitely because the liquidation auction do not allow adjustment to its floor price. 
+# Issue M-1: Lend offer can be deleted multiple times 
 
-Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/152 
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/119 
 
 ## Found by 
-Flashloan44
-### Vulnerability Detail
+0x37, 0xAristos, 0xSolus, KlosMitSoss, Vidus, bbl4de, copperscrewer, liquidbuddha, newspacexyz, onthehunt, theweb3mechanic
+### Summary
 
-There are cases that a particular token can shoot up its price in single day and these incidents can affect the price of auctioned collateral NFR. Auctioned collateral NFR price is dependent on quantity of its [underlying token](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Loan.sol#L473-L474) of veNFT (veAero) in this case is Aero tokens. If the usd price of Aero tokens increased in very high level like 2x or 10x from the original value when the auction started, it can affect the buyer sentiments and left the auctioned NFR unsold for a long period of time.
-
-Usually when this case happened, the auction owner need to update the price depending on market condition. He can edit the floor price to make it affordable for large group of willing buyers. In this price adjustment, this can increase the chance that the auctioned NFR to be sold for short period of time. Lenders will be able to claim the proceeds from the sale of collateral.
-
-However, in the current setup of the protocol, the auctioned collateral NFR price is fixed once it reaches the floor price. For example, if the floor price of auctioned NFR is 1,000 aero tokens (1 usd per aero token when it hits the floor price), the usd value is 1,000 usd. But the question is, what if the usd price of aero increase significantly like 10x in the next day? The buyers will definitely delay the purchase and need to wait longer until the market condition become affordable again. So in this kind of incident, the auction owner will adjust the floor price to make it more affordable, but the [editfloorprice](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/auctions/Auction.sol#L192-L226) is not available to be accessed by loan contract which is the owner of auction. [Loan contract](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Loan.sol#L85) has no function that allows it to access the editfloorprice, that's why we have issue.
+Lack of check in addFunds() function. This will cause one lend offer can be deleted twice.
 
 ### Root Cause
 
-During liquidation auction process, the [auction owner](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/auctions/AuctionFactory.sol#L85) which is the [loan contract](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Loan.sol#L470-L477) has no capability to adjust the floor price of auctioned collateral NFR once the price hit the floor price. This can be problematic because the floor price is fixed to the "[quantity of underlying tokens](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Loan.sol#L475)" of veNFT (veAero) in this case, the Aero tokens. If the usd price of each Aero token increase significantly, this can affect the selling of auctioned collateral NFR. Buyers will wait for longer until market becomes affordable again and this will delay the lenders to claim the proceeds of collateral sale.
+In [DebitaLendOffer-Implementation:178](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaLendOffer-Implementation.sol#L178), there is one perpetual mode. 
+Considering one scenario: The lend offer is in perpetual mode and current `availableAmount` equals 0. Now when we try to change perpetual to false, we will delete this lend order.
+The problem is that we lack updating `isActive` to false in changePerpetual(). This will cause that the owner can trigger `changePerpetual` multiple times to delete the same lend order.
+When we repeat deleting the same lend order in `deleteOrder`, we will keep decreasing `activeOrdersCount`. This will impact other lend offer. Other lend offers may not be deleted.
 
-Here is the editFloorPrice function that supposed to be use to adjust the floor price of the auctioned NFR. However, the owner of auction contract which is the loan contract has no available function to access the editfloorprice. Therefore, the price can't be adjusted when there is significant price increase in Aero tokens. 
-
-```Solidity
-File: Auction.sol
-195:     function editFloorPrice(
-196:         uint newFloorAmount
-197:     ) public onlyActiveAuction onlyOwner {
-198:         uint curedNewFloorAmount = newFloorAmount *
-199:             (10 ** s_CurrentAuction.differenceDecimals);
-200:         require(
-201:             s_CurrentAuction.floorAmount > curedNewFloorAmount,
-202:             "New floor lower"
-203:         );
-204: 
-205:         dutchAuction_INFO memory m_currentAuction = s_CurrentAuction;
-206:         uint newDuration = (m_currentAuction.initAmount - curedNewFloorAmount) /
-207:             m_currentAuction.tickPerBlock;
-208: 
-209:         uint discountedTime = (m_currentAuction.initAmount -
-210:             m_currentAuction.floorAmount) / m_currentAuction.tickPerBlock;
-211: 
-212:         if (
-213:             (m_currentAuction.initialBlock + discountedTime) < block.timestamp
-214:         ) {
-215:             // ticket = tokens por bloque   tokens / tokens por bloque = bloques
-216:             m_currentAuction.initialBlock = block.timestamp - (discountedTime);
-217:         }
-218: 
-219:         m_currentAuction.duration = newDuration;
-220:         m_currentAuction.endBlock = m_currentAuction.initialBlock + newDuration;
-221:         m_currentAuction.floorAmount = curedNewFloorAmount;
-222:         s_CurrentAuction = m_currentAuction;
-223: 
-224:         auctionFactory(factory).emitAuctionEdited(
-225:             address(this),
-226:             s_ownerOfAuction
-227:         );
-228:         // emit offer edited
-229:     }
+```solidity
+    function changePerpetual(bool _perpetual) public onlyOwner nonReentrant {
+        require(isActive, "Offer is not active");
+        lendInformation.perpetual = _perpetual;
+        if (_perpetual == false && lendInformation.availableAmount == 0) {
+            IDLOFactory(factoryContract).emitDelete(address(this));
+            IDLOFactory(factoryContract).deleteOrder(address(this));
+        } else {
+            IDLOFactory(factoryContract).emitUpdate(address(this));
+        }
+    }
+```
+```solidity
+    function deleteOrder(address _lendOrder) external onlyLendOrder {
+        uint index = LendOrderIndex[_lendOrder];
+        LendOrderIndex[_lendOrder] = 0;
+        // switch index of the last borrow order to the deleted borrow order
+        allActiveLendOrders[index] = allActiveLendOrders[activeOrdersCount - 1];
+        LendOrderIndex[allActiveLendOrders[activeOrdersCount - 1]] = index;
+        // take out last borrow order
+        allActiveLendOrders[activeOrdersCount - 1] = address(0);
+        activeOrdersCount--;
+    }
 ```
 
 ### Internal pre-conditions
 
-_No response_
+N/A
 
 ### External pre-conditions
 
-USD Price of underlying token increase significantly since the auction started.
+N/A
 
 ### Attack Path
 
-This can be the scenario:
-<img width="1020" alt="image" src="https://github.com/user-attachments/assets/ebeef21e-0780-4100-8968-047331ff0bcd">
-
-
-
-
+1. Alice creates one lend order with perpetual mode.
+2. Match Alice's lend order to let `availableAmount` to 0.
+3. Alice triggers `changePerpetual` repeatedly to let `activeOrdersCount` to 0.
+4. Other lend orders cannot be deleted.
 
 ### Impact
 
-The collateral is locked indefinitely depending on market conditions. This could take weeks or months to remain unsold if the price is still high. If remain unsold, this would technically mean , the lenders can't able to recover their proceeds from sale.
-
+All lend orders cannot be deleted. This will cause that lend order cannot be cancelled or may not accept this lend offer if we want to use the whole lend order's principle.
 
 ### PoC
 
-See attack path for steps
+N/A
 
 ### Mitigation
 
-The protocol should give the auction owner which is the loan contract the capability to adjust the floor price of auctioned NFR collateral during unpredictable sudden increase of underlying token price. Defi market condition is hard to predict so the protocol should be always prepared and able to adjust when that time happens to prevent damages to the lenders who are waiting sale proceeds of the NFR.
+When we delete the lend order, we should set it to inactive. This will prevent changePerpetual() retriggered repeatedly.
+```diff
+     function changePerpetual(bool _perpetual) public onlyOwner nonReentrant {
+         require(isActive, "Offer is not active");
+ 
+         lendInformation.perpetual = _perpetual;
+         if (_perpetual == false && lendInformation.availableAmount == 0) {
++            isActive = false;
+             IDLOFactory(factoryContract).emitDelete(address(this));
+             IDLOFactory(factoryContract).deleteOrder(address(this));
+         } else {
+```
 
 # Issue M-2: Borrowers can not extend loans which has maximum duration less than 24 hours 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/153 
 
 ## Found by 
-0xc0ffEE
+0x37, 0xc0ffEE, KaplanLabs, bbl4de, dhank, farismaulana, nikhil840096, ydlee
 ### Summary
 
 The logics to calculate the missing borrow fee is incorrect, which will cause the borrowers can not extend loans having maximum duration less than 24 hours because of arithmetic underflow
@@ -474,7 +636,62 @@ Consider updating like below
 +                        feeOfMaxDeadline = minFEE;
 ```
 
-# Issue M-3: The fee calculation in extendLoan function has a error 
+# Issue M-3: The precision loss in the fee percentage for connecting offers results in the borrower paying less than the expected fee. 
+
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/208 
+
+## Found by 
+nikhil840096, ydlee
+### Summary
+
+Some of the borrowed principal tokens is charged as a fee for connecting transactions. The percentage of the fee is calculated according to `DebitaV3Aggregator.sol:391`. There is a non-negligible precision loss in the calculation process. Since the default `feePerDay` is `4`, the maximum loss could reach up to `1/4` of the daily fee, which is significant, especially when the amount borrowed is substantial.
+```solidity
+391:    uint percentage = ((borrowInfo.duration * feePerDay) / 86400);  // @audit-issue 最多损失1/4天的费用
+```
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Aggregator.sol#L391
+
+There are another 2 instances of the issue in `DebitaV3Load.sol:extendLoan`.
+```solidity
+571:    uint PorcentageOfFeePaid = ((m_loan.initialDuration * feePerDay) /
+572:        86400);
+```
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Loan.sol#L571-L572
+
+```solidity
+602:                uint feeOfMaxDeadline = ((offer.maxDeadline * feePerDay) /
+603:                    86400);
+```
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Loan.sol#L602-L603
+
+### Root Cause
+
+In `DebitaV3Aggregator.sol:391`, rounding down the fee percentage can lead to a non-trivial precision loss.
+
+### Internal pre-conditions
+
+_No response_
+
+### External pre-conditions
+
+_No response_
+
+### Attack Path
+
+By setting the borrowing duration to `N days + 86400/4 - 1`, users can save the maximum fee.
+
+### Impact
+
+The precision loss in the fee percentage results in the borrower paying less than the expected fee, with the maximum loss potentially reaching up to `1/4` of the daily fee.
+
+### PoC
+
+_No response_
+
+### Mitigation
+
+When calculating the fee percentage, rounding up; or multiplying by a multiple to increase precision.
+
+# Issue M-4: The fee calculation in extendLoan function has a error 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/211 
 
@@ -550,7 +767,7 @@ _No response_
 ```
 ```
 
-# Issue M-4: Incorrect calculation of extended loan days leads to unfair borrower fees 
+# Issue M-5: Incorrect calculation of extended loan days leads to unfair borrower fees 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/236 
 
@@ -613,12 +830,12 @@ require(extendedDays > 0, "Invalid extended days");
 uint feeOfMaxDeadline = ((extendedDays * feePerDay) / 86400);
 ```
 
-# Issue M-5: Attacker will prevent lenders from canceling lend orders and block non-perpetual lend orders matching. 
+# Issue M-6: Attacker will prevent lenders from canceling lend orders and block non-perpetual lend orders matching. 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/246 
 
 ## Found by 
-0x37, 0xAristos, 0xPhantom2, 0xSolus, 0xloscar01, 0xlrivo, Ace-30, Audinarey, BengalCatBalu, ExtraCaterpillar, Feder, Honour, KlosMitSoss, Moksha, Vasquez, Vidus, ahmedovv, almantare, aman, araj, arman, bbl4de, befree3x, copperscrewer, dany.armstrong90, dimah7, dimulski, eeshenggoh, farismaulana, jjk, jsmi, liquidbuddha, momentum, newspacexyz, nikhil840096, onthehunt, pepocpeter, prosper, s0x0mtee, stakog, t.aksoy, theweb3mechanic, tjonair, tourist, utsav, ydlee
+0x37, 0xPhantom2, 0xloscar01, 0xlrivo, Ace-30, Audinarey, BengalCatBalu, ExtraCaterpillar, Feder, Honour, KlosMitSoss, Moksha, Vasquez, ahmedovv, almantare, aman, araj, arman, bbl4de, befree3x, dany.armstrong90, dimah7, dimulski, eeshenggoh, farismaulana, jjk, jsmi, liquidbuddha, momentum, nikhil840096, onthehunt, pepocpeter, prosper, s0x0mtee, stakog, t.aksoy, tjonair, tourist, utsav, ydlee
 ### Summary
 
 The missing active order check in `DLOImplementation::addFunds` will allow an attacker to halt the cancellation of lend orders for every lender and prevent non-perpetual lend orders from being fully matched as the attacker will execute the following attack path:
@@ -1086,12 +1303,12 @@ Add a check in `DLOImplementation::addFunds` to prevent adding funds to an inact
          );
 ```
 
-# Issue M-6: An attacker can wipe the orderbook in buyOrderFactory.sol 
+# Issue M-7: An attacker can wipe the orderbook in buyOrderFactory.sol 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/326 
 
 ## Found by 
-0x37, AdamSzymanski, liquidbuddha, tourist
+0x37, AdamSzymanski, VAD37, Vidus, copperscrewer, liquidbuddha, tourist
 ### Summary
 
 A malicious actor can wipe the complete buy order orderbook in `buyOrderFactory.sol`. The attack - excluding gas costs - does not bear any financial burden on the attacker. As a result of the exploit, the orderbook will be temporarily inaccessible in the factory, leading to a DoS state in buy order matching, and in closing and selling existing positions.
@@ -1250,7 +1467,7 @@ contract BuyOrderTest is Test {
 Apply reentrancy protection on the function `sellNFT(uint receiptID)`:
 https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/buyOrders/buyOrder.sol#L92
 
-# Issue M-7: Lender may loose part of the interest he has accrued if he makes his lend offer perpetual after a loan has been extended by the borrower 
+# Issue M-8: Lender may loose part of the interest he has accrued if he makes his lend offer perpetual after a loan has been extended by the borrower 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/345 
 
@@ -1373,7 +1590,7 @@ _No response_
 
 Consider implementing a separate function just for claiming interest. 
 
-# Issue M-8: Mixed Token Price Will Be Inflated or Deflated 
+# Issue M-9: Mixed Token Price Will Be Inflated or Deflated 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/362 
 
@@ -1463,12 +1680,168 @@ In line `61`, replace `decimalsToken1` with `decimalsToken0`.
 +           (10 ** decimalsToken0);
 ```
 
-# Issue M-9: Auctioned `taxTokensReceipt` NFT Blocks Last Claimant Due to Insufficient Funds 
+# Issue M-10: Precision loss leads to locked incentives in `DebitaIncentives::claimIncentives()` 
+
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/385 
+
+## Found by 
+BengalCatBalu, KlosMitSoss, Maroutis, VAD37, dany.armstrong90, jsmi, pashap9990
+### Summary
+
+When a lender or borrwer calls `DebitaIncentives::claimIncentives()` to claim a share of the incentives for a specific token pair they interacted with during an epoch, their share is calculated as a [percentage](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/1465ba6884c4cc44f7fc28e51f792db346ab1e33/Debita-V3-Contracts/contracts/DebitaIncentives.sol#L161). This percentage is determined based on the amount they lent or borrowed through the protocol during that epoch, relative to the total amount lent and borrowed by all users in the same period.
+
+The percentage is rounded to two decimal places, which means up to `0.0099%` of the incentives may remain unclaimed for each lender or borrower.  Consider the following simple scenario:
+
+1. Six lenders each lent `5e18` over a 14-day period for a specific token pair
+2. That token pair is incentivized with `1000e18`
+3. The total amount lent equals `6 * 5e18 = 30e18`
+
+After each lender calls `DebitaIncentives::claimIncentives()`, there will still be `4e17` locked in the contract permanently. This means the incentivizer loses `0.04%` of their incentives and every lender lost `4e17 / 6`.
+
+### Root Cause
+
+In `DebitaIncentives.sol`, there is no mechanism for incentivizers to withdraw unclaimed incentives that cannot be claimed due to precision loss.
+
+### Internal pre-conditions
+
+1. Incentivizers need to call `DebitaIncentives::incentivizePair()` to incentivize specific token pairs.
+2. Users need to interact with one of these incentivized pairs by borrowing or lending them.
+
+### External pre-conditions
+
+None.
+
+### Attack Path
+
+1. A user that interacted with an incentivized token pair calls `DebitaIncentives::claimIncentives()`. He will receive less funds due to rounding. The funds will be stuck in the contract.
+
+### Impact
+
+In this example, the incentivizer suffers an approximate loss of `0.04%`. This loss could increase as the number of distinct lenders and borrowers interacting with the protocol grows, aligning with the protocol's objective of fostering increased activity.
+Users experience a partial loss of their incentive share each time they interact with an incentivized pair within a 14-day period.
+
+It is important to note that incentivizers can incentivize an unlimited number of token pairs for an unlimited number of `epochs`.
+Additionally, lenders can participate across multiple `epochs`.
+
+While the amount of locked funds in this simple scenario is relatively small, similar scenarios could occur repeatedly over an unlimited number of `epochs`. Over time, this accumulation could result in hundreds of tokens being permanently locked in the contract.
+
+### PoC
+
+The following should be added in `MultipleLoansDuringIncentives.t.sol`:
+
+```solidity
+address fourthLender = address(0x04);
+address fifthLender = address(0x05);
+address sixthLender = address(0x06);
+```
+
+Add the following test to `MultipleLoansDuringIncentives.t.sol`:
+
+```solidity
+function testUnclaimableIncentives() public {
+    incentivize(AERO, AERO, USDC, true, 1000e18, 2);
+    vm.warp(block.timestamp + 15 days);
+    createLoan(borrower, firstLender, AERO, AERO);
+    createLoan(borrower, secondLender, AERO, AERO);
+    createLoan(borrower, thirdLender, AERO, AERO);
+    createLoan(borrower, fourthLender, AERO, AERO);
+    createLoan(borrower, fifthLender, AERO, AERO);
+    createLoan(borrower, sixthLender, AERO, AERO);
+    vm.warp(block.timestamp + 30 days);
+        
+    // principles, tokenIncentives, epoch with dynamic Data
+    address[] memory principles = allDynamicData.getDynamicAddressArray(1);
+    address[] memory tokenUsedIncentive = allDynamicData
+        .getDynamicAddressArray(1);
+    address[][] memory tokenIncentives = new address[][](
+        tokenUsedIncentive.length
+    );
+    principles[0] = AERO;
+    tokenUsedIncentive[0] = USDC;
+    tokenIncentives[0] = tokenUsedIncentive;
+
+    vm.startPrank(firstLender);
+    uint balanceBefore_First = IERC20(USDC).balanceOf(firstLender);
+    incentivesContract.claimIncentives(principles, tokenIncentives, 2);
+    uint balanceAfter_First = IERC20(USDC).balanceOf(firstLender);
+    vm.stopPrank();
+
+    vm.startPrank(secondLender);
+    uint balanceBefore_Second = IERC20(USDC).balanceOf(secondLender);
+    incentivesContract.claimIncentives(principles, tokenIncentives, 2);
+    uint balanceAfter_Second = IERC20(USDC).balanceOf(secondLender);
+    vm.stopPrank();
+
+    vm.startPrank(thirdLender);
+    uint balanceBefore_Third = IERC20(USDC).balanceOf(thirdLender);
+    incentivesContract.claimIncentives(principles, tokenIncentives, 2);
+    uint balanceAfter_Third = IERC20(USDC).balanceOf(thirdLender);
+    vm.stopPrank();
+
+    vm.startPrank(fourthLender);
+    uint balanceBefore_Fourth = IERC20(USDC).balanceOf(fourthLender);
+    incentivesContract.claimIncentives(principles, tokenIncentives, 2);
+    uint balanceAfter_Fourth = IERC20(USDC).balanceOf(fourthLender);
+    vm.stopPrank();
+
+    vm.startPrank(fifthLender);
+    uint balanceBefore_Fifth = IERC20(USDC).balanceOf(fifthLender);
+    incentivesContract.claimIncentives(principles, tokenIncentives, 2);
+    uint balanceAfter_Fifth = IERC20(USDC).balanceOf(fifthLender);
+    vm.stopPrank();
+
+    vm.startPrank(sixthLender);
+    uint balanceBefore_Sixth = IERC20(USDC).balanceOf(sixthLender);
+    incentivesContract.claimIncentives(principles, tokenIncentives, 2);
+    uint balanceAfter_Sixth = IERC20(USDC).balanceOf(sixthLender);
+    vm.stopPrank();
+
+    uint claimedFirst = balanceAfter_First - balanceBefore_First;
+    uint claimedSecond = balanceAfter_Second - balanceBefore_Second;
+    uint claimedThird = balanceAfter_Third - balanceBefore_Third;
+    uint claimedFourth = balanceAfter_Fourth - balanceBefore_Fourth;
+    uint claimedFifth = balanceAfter_Fifth - balanceBefore_Fifth;
+    uint claimedSixth = balanceAfter_Sixth - balanceBefore_Sixth;
+
+    assertEq(claimedFirst, claimedSecond);
+    assertEq(claimedSecond, claimedThird);
+    assertEq(claimedThird, claimedFourth);
+    assertEq(claimedFourth, claimedFifth);
+    assertEq(claimedFifth, claimedSixth);
+
+    // formula percentage: porcentageLent = (lentAmount * 10000) / totalLentAmount;
+    // (5e18 * 10000) / 30e18 = 1666.66667 (16.6666667%)
+    // rounded to 1666 (16%), 0.66667 (0.0066667%) will be lost
+    uint amount = (1000e18 * 1666) / 10000;
+
+    assertEq(amount, 1666e17);
+    assertEq(claimedFirst, amount);
+        
+    uint claimedAmount = claimedFirst + claimedSecond + claimedThird + claimedFourth + claimedFifth + claimedSixth;
+
+    // 6 different lenders with lend orders of 5e18 will not get the whole 1000e18 of incentives
+    assertNotEq(1000e18, claimedAmount);
+
+    // percentage should be approximately 1666.66667 (16.6666667%)
+    // rounded to 1666 (16%), 0.66667 (0.0066667%) will be lost per lend order
+
+    uint lockedAmount = 1000e18 - claimedAmount;
+
+    // 0.04% of 1000e18 (4e17) will be locked forever
+    assertEq(lockedAmount, 4e17);
+}
+```
+
+### Mitigation
+
+Consider adding a mechanism that allows incentivizers to withdraw their unclaimed incentives from all their past incentivized epochs after a specified period following the end of the last incentivized epoch (e.g., two epochs later).
+
+# Issue M-11: Auctioned `taxTokensReceipt` NFT Blocks Last Claimant Due to Insufficient Funds 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/470 
 
 ## Found by 
-0x37, 0xAristos, 0xShoonya, 0xlrivo, 0xmystery, BengalCatBalu, DenTonylifer, Greed, KaplanLabs, MoonShadow, Robert, Ryonen, bbl4de, dhank, dimah7, dimulski, durov, jsmi, nikhil840096, nikhilx0111, pashap9990, s0x0mtee, theweb3mechanic, v1vah0us3, xiaoming90
+0x37, KaplanLabs, bbl4de, dimulski
 ### Summary
 
 In the [`Auction::buyNFT`](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/1465ba6884c4cc44f7fc28e51f792db346ab1e33/Debita-V3-Contracts/contracts/auctions/Auction.sol#L109) function, users can purchase the current NFT in an auction using the same type of tokens as the underlying asset of the NFT. For example, `taxTokensReceipt` created with FoT tokens must be bought with the same FoT tokens.
@@ -1532,12 +1905,12 @@ _No response_
 
 Take into account the fee on transfer when buying the `taxTokenReceipt` NFT.
 
-# Issue M-10: A borrower may pay more interest that he has specified, if orders are matched by a malicious actor 
+# Issue M-12: A borrower may pay more interest that he has specified, if orders are matched by a malicious actor 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/480 
 
 ## Found by 
-0x37, BengalCatBalu, dimulski, h4rs0n, newspacexyz, prosper
+0x37, BengalCatBalu, dimulski, h4rs0n, newspacexyz
 ### Summary
 
 In the ``DebitaV3Aggregator.sol`` contract, anybody can match borrow and lend orders by calling the [matchOffersV3()](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Aggregator.sol#L274-L647) function. When borrowers create their borrow orders they specify a maximum APR they are willing to pay. However the [matchOffersV3()](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Aggregator.sol#L274-L647) function allows the caller to specify an array of 29 different lend orders to be matched against each borrow offer. Another important parameter is the ``uint[] memory lendAmountPerOrder`` which specifies the amount of principal tokens each lend order will provide. A malicious user can provide smaller amounts for a part of the ``lendAmountPerOrder`` params, such that the borrower pays a higher APR on this amounts. The problem arises due to the fact that there are no minimum restrictions on the ``lendAmountPerOrder`` (except it being bigger than 0), and the fact that solidity rounds down on division. 
@@ -1790,7 +2163,7 @@ To run the test use: ``forge test -vvv --mt test_InflateAPR``
 ### Mitigation
 _No response_
 
-# Issue M-11: Interest paid for non perpetual loan during loan extension is lost when the borrower repays debt 
+# Issue M-13: Interest paid for non perpetual loan during loan extension is lost when the borrower repays debt 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/483 
 
@@ -1873,7 +2246,194 @@ File: DebitaV3Loan.sol
 
 ```
 
-# Issue M-12: MixOracle is broken due to hardcoded position 
+# Issue M-14: The `MixOracle.getThePrice` function calculates the price incorrectly using the `TarotOracle.getResult` function as the TWAP price 
+
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/501 
+
+## Found by 
+KupiaSec
+### Summary
+
+The `MixOracle.getThePrice` function calculates the price using the `TarotOracle` contract and the `pyth` oracle. However, it incorrectly uses the `TarotOracle.getResult` function as the TWAP price, which disrupts the matching mechanism for lend and borrow orders.
+
+### Root Cause
+
+In the [MixOracle.getThePrice](https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/oracles/MixOracle/MixOracle.sol#L40) function, the `twapPrice112x112` is retrieved from the `TarotOracle.getResult` function at L50. It then calculates the price of 1 token1 in USD using `twapPrice112x112` and the price from the `pyth` oracle at L65.
+
+```solidity
+        ITarotOracle priceFeed = ITarotOracle(_priceFeed);
+        address uniswapPair = AttachedUniswapPair[tokenAddress];
+        require(isFeedAvailable[uniswapPair], "Price feed not available");
+L50:    (uint224 twapPrice112x112, ) = priceFeed.getResult(uniswapPair);
+        [...]
+        int amountOfAttached = int(
+            (((2 ** 112)) * (10 ** decimalsToken1)) / twapPrice112x112
+        );
+L65:    uint price = (uint(amountOfAttached) * uint(attachedTokenPrice)) /
+            (10 ** decimalsToken1);
+```
+
+The `TarotOracle.getResult` function returns the time-weighted average of `reserve0 + price`, rather than the TWAP price, from L46.
+Also, it does not synchronize with `uniswapV2Pair`.
+
+```solidity
+File: contracts\oracles\MixOracle\TarotOracle\TarotPriceOracle.sol
+    function getPriceCumulativeCurrent(
+        address uniswapV2Pair
+    ) internal view returns (uint256 priceCumulative) {
+        priceCumulative = IUniswapV2Pair(uniswapV2Pair)
+            .reserve0CumulativeLast();
+        (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 _blockTimestampLast
+        ) = IUniswapV2Pair(uniswapV2Pair).getReserves();
+        uint224 priceLatest = UQ112x112.encode(reserve1).uqdiv(reserve0);
+        uint32 timeElapsed = getBlockTimestamp() - _blockTimestampLast; // overflow is desired
+        // * never overflows, and + overflow is desired
+L46:    priceCumulative += (uint256(priceLatest) * timeElapsed);
+    }
+```
+
+This means that the `twapPrice112x112` in the `MixOracle.getThePrice` function is not the correct TWAP price. Consequently, the `DebitaV3Aggregator.matchOffersV3` uses an incorrect price to match lend and borrow orders.
+
+### Internal pre-conditions
+
+A user creates the order with MixOracle.
+
+### External pre-conditions
+
+1. None
+
+### Attack Path
+
+None
+
+### Impact
+
+The incorrect price from the `MixOracle` disrupts the matching mechanism for lend and borrow orders.
+This causes user's loss of funds.
+
+### PoC
+
+Change the code in the `MixOracle.getThePrice` function to get the correct price from the `uniswapV2Pair`.
+
+```diff
+File: code\Debita-V3-Contracts\contracts\oracles\MixOracle\MixOracle.sol
+-   function getThePrice(address tokenAddress) public returns (int) {
++   function getTotalPrice(address tokenAddress, address uniswapV2Pair) public returns (int, int) {
+        // get tarotOracle address
+        address _priceFeed = AttachedTarotOracle[tokenAddress];
+        require(_priceFeed != address(0), "Price feed not set");
+        require(!isPaused, "Contract is paused");
+        ITarotOracle priceFeed = ITarotOracle(_priceFeed);
+
+        address uniswapPair = AttachedUniswapPair[tokenAddress];
+        require(isFeedAvailable[uniswapPair], "Price feed not available");
+        // get twap price from token1 in token0
+        (uint224 twapPrice112x112, ) = priceFeed.getResult(uniswapPair);
+        address attached = AttachedPricedToken[tokenAddress];
+
+        // Get the price from the pyth contract, no older than 20 minutes
+        // get usd price of token0
+        int attachedTokenPrice = IPyth(debitaPythOracle).getThePrice(attached);
+        uint decimalsToken1 = ERC20(attached).decimals();
+        uint decimalsToken0 = ERC20(tokenAddress).decimals();
+
+        // calculate the amount of attached token that is needed to get 1 token1
+        int amountOfAttached = int(
+            (((2 ** 112)) * (10 ** decimalsToken1)) / twapPrice112x112
+        );
+
+        // calculate the price of 1 token1 in usd based on the attached token
+        uint price = (uint(amountOfAttached) * uint(attachedTokenPrice)) /
+            (10 ** decimalsToken1);
+
+        require(price > 0, "Invalid price");
+-       return int(uint(price));
++       uint wftmPrice = IUniswapV2Pair(uniswapV2Pair).current(tokenAddress, 1e18);
++       // uint realPrice = (uint(attachedTokenPrice)) * wftmPrice;
++       uint realPrice = (uint(attachedTokenPrice)) * wftmPrice / (10 ** decimalsToken1);
++       return (int(uint(price)), int(uint(realPrice)));
+    }
+```
+
+And add the following `testTotalPrice` test function in the `OracleTarotUSDCEQUAL.t.sol`.
+
+```solidity
+File: code\Debita-V3-Contracts\test\fork\Loan\ltv\Tarot-Fantom\OracleTarotUSDCEQUAL.t.sol
+    function testTotalPrice() public{
+        IUniswapV2Pair(EQUALPAIR).sync();
+        DebitaMixOracle.setAttachedTarotPriceOracle(EQUALPAIR);
+        vm.warp(block.timestamp + 1201);
+        IUniswapV2Pair(EQUALPAIR).sync();
+        (int originPrice, int realPrice) = DebitaMixOracle.getTotalPrice(EQUAL, EQUALPAIR);
+        console.logString(" price:");
+        console.logUint(uint(originPrice));
+        console.logString("actual price:");
+        console.logUint(uint(realPrice));
+        console.logString("price diff ratio:");
+        console.logUint(uint(originPrice / realPrice));
+    }
+```
+
+Use the following command to test above function.
+
+```bash
+forge test --rpc-url https://mainnet.base.org --match-path test/fork/Loan/ltv/Tarot-Fantom/OracleTarotUSDCEQUAL.t.sol --match-test testTotalPrice -vvv 
+```
+
+The result is as following:
+
+```text
+  mix price:
+  147639521176897807
+  actual price:
+  926069876
+  price diff ratio:
+  159425897
+```
+
+This indicates that the mix price is 147,639,521,176,897,807, while the actual price is 926,069,876. The mix price is significantly higher than the actual price.
+
+### Mitigation
+
+It is recommended to change the code as following:
+
+```diff
+File: code\Debita-V3-Contracts\contracts\oracles\MixOracle\MixOracle.sol
+    function getThePrice(address tokenAddress) public returns (int) {
+-       address _priceFeed = AttachedTarotOracle[tokenAddress];
+-       require(_priceFeed != address(0), "Price feed not set");
+-       require(!isPaused, "Contract is paused");
+-       ITarotOracle priceFeed = ITarotOracle(_priceFeed);
+-       address uniswapPair = AttachedUniswapPair[tokenAddress];
+-       require(isFeedAvailable[uniswapPair], "Price feed not available");
+-       (uint224 twapPrice112x112, ) = priceFeed.getResult(uniswapPair);
++       uint224 twapPrice112x112 = uint224(IUniswapV2Pair(uniswapV2Pair).current(tokenAddress, 1e18));
+        address attached = AttachedPricedToken[tokenAddress];
+
+        // Get the price from the pyth contract, no older than 20 minutes
+        // get usd price of token0
+        int attachedTokenPrice = IPyth(debitaPythOracle).getThePrice(attached);
+        uint decimalsToken1 = ERC20(attached).decimals();
+        uint decimalsToken0 = ERC20(tokenAddress).decimals();
+
+        // calculate the amount of attached token that is needed to get 1 token1
+        int amountOfAttached = int(
+            (((2 ** 112)) * (10 ** decimalsToken1)) / twapPrice112x112
+        );
+
+        // calculate the price of 1 token1 in usd based on the attached token
+        uint price = (uint(amountOfAttached) * uint(attachedTokenPrice)) /
+            (10 ** decimalsToken1);
+
+        require(price > 0, "Invalid price");
+        return int(uint(price));
+    }
+```
+
+# Issue M-15: MixOracle is broken due to hardcoded position 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/540 
 
@@ -1989,7 +2549,7 @@ _No response_
 
 Consider not hardcoding the position (`token1`) as the key of the mapping used within `MixOracle`. Instead, allow the deployer to specify which token (`token0` or `token1`) the `MixOracle` is supposed to support.
 
-# Issue M-13: Users can be griefed due to lack of minimum size within the Loan and Offer 
+# Issue M-16: Users can be griefed due to lack of minimum size within the Loan and Offer 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/557 
 
@@ -2043,7 +2603,94 @@ Having a maximum number of offers (e.g., 100) within a single Loan is insufficie
 
 Thus, it is recommended to impose the minimum size for each loan and/or offer, so that malicious aggregators cannot create many small/tiny loans and offers to grief the users.
 
-# Issue M-14: Incentive Creator's Tokens Permanently Locked in Zero-Activity Epochs 
+# Issue M-17: Borrower can obtain principle tokens without paying collateral tokens 
+
+Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/558 
+
+## Found by 
+xiaoming90
+### Summary
+
+_No response_
+
+### Root Cause
+
+_No response_
+
+### Internal pre-conditions
+
+_No response_
+
+### External pre-conditions
+
+_No response_
+
+### Attack Path
+
+Assume that the ratio/price is 1e18 (1 XYZ per ABC => Principle per Collateral). XYZ is 18 decimals while ABC is 6 decimals.
+
+Assume that Bob (malicious borrower) calls the permissionless `DebitaV3Aggregator.matchOffersV3` function. The amount of collateral deducted from Bob's borrow offer is calculated via the following:
+
+```solidity
+userUsedCollateral = (lendAmountPerOrder[i] * (10 ** decimalsCollateral)) / ratio;
+userUsedCollateral = (lendAmountPerOrder[i] * 1e6) / 1e18;
+```
+
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Aggregator.sol#L467
+
+```solidity
+File: DebitaV3Aggregator.sol
+274:     function matchOffersV3(
+..SNIP..
+466:             // calculate the amount of collateral used by the lender
+467:             uint userUsedCollateral = (lendAmountPerOrder[i] *
+468:                 (10 ** decimalsCollateral)) / ratio;
+```
+
+
+For `lendAmountPerOrder`, he uses a value that is small enough to trigger a rounding to zero error. The range of `lendAmountPerOrder` that will cause `userUsedCollateral` to round down to zero is:
+
+$0≤lendAmountPerOrder<10^{12}$
+
+Thus, for each offer, Bob will specify the `lendAmountPerOrder[i]` to be `1e12 - 1`. Thus, for each offer, he will be able to obtain `1e12 - 1` XYZ tokens without paying a single ABC tokens as collateral.
+
+This attack is profitable because each `matchOffersV3` transaction can execute up to 100 offers, and the protocol is intended to be deployed on L2 chains where gas fees are extremely cheap or even negligible.
+
+https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaV3Aggregator.sol#L290
+
+```solidity
+File: DebitaV3Aggregator.sol
+274:     function matchOffersV3(
+..SNIP..
+289:         // check lendOrder length is less than 100
+290:         require(lendOrders.length <= 100, "Too many lend orders");
+```
+
+Following is the extract from [Contest's README](https://github.com/sherlock-audit/2024-11-debita-finance-v3-xiaoming9090?tab=readme-ov-file#q-on-what-chains-are-the-smart-contracts-going-to-be-deployed) showing that the protocol will be deployed to following L2 chains.
+
+> Q: On what chains are the smart contracts going to be deployed?
+>
+> Sonic (Prev. Fantom), Base, Arbitrum & OP
+
+### Impact
+
+High. Loss of assets.
+
+### PoC
+
+_No response_
+
+### Mitigation
+
+This issue can be easily mitigated by implementing the following changes to prevent the above attack.
+
+```diff
+// calculate the amount of collateral used by the lender
+uint userUsedCollateral = (lendAmountPerOrder[i] * (10 ** decimalsCollateral)) / ratio;
++ require(userUsedCollateral > 0, "userUsedCollateral is zero")
+```
+
+# Issue M-18: Incentive Creator's Tokens Permanently Locked in Zero-Activity Epochs 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/616 
 
@@ -2109,13 +2756,12 @@ _No response_
 
  Add a recovery mechanism that allows incentive creators to withdraw unclaimed tokens after an epoch ends. This should only be possible if the epoch had zero activity.
 
-
-# Issue M-15: An attacker can steal the entire borrow and lending incentive of an epoch with FLASHLOAN in a single transaction 
+# Issue M-19: An attacker can steal the entire borrow and lending incentive of an epoch with FLASHLOAN in a single transaction 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/708 
 
 ## Found by 
-BengalCatBalu, CL001, Feder, KaplanLabs, KlosMitSoss, Pablo, bbl4de, dimulski, lanrebayode77, tjonair, xiaoming90
+BengalCatBalu, CL001, Feder, KaplanLabs, KlosMitSoss, Pablo, bbl4de, dimulski, lanrebayode77, mike-watson, pashap9990, tjonair, xiaoming90
 ### Summary
 
 An attacker, with the aid of flash-loan can steal the entire borrow and lending incentives.
@@ -2200,12 +2846,12 @@ https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-
 1. Prevent repayment in the same block
 2. It might be helpful to prevent lender == borrower == connector
 
-# Issue M-16: Loan Extension Fails Due to Unused Time Calculation 
+# Issue M-20: Loan Extension Fails Due to Unused Time Calculation 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/766 
 
 ## Found by 
-0x37, 0xPhantom2, 0xmujahid002, Audinarey, BengalCatBalu, Falendar, Honour, KaplanLabs, bbl4de, dany.armstrong90, dhank, dimulski, farismaulana, jsmi, mladenov, moray5554, newspacexyz, nikhil840096, nikhilx0111, ydlee, yovchev\_yoan, zkillua
+0x37, 0xPhantom2, 0xmujahid002, Audinarey, BengalCatBalu, Falendar, Honour, dany.armstrong90, dimulski, jsmi, mladenov, moray5554, newspacexyz, nikhil840096, nikhilx0111, yovchev\_yoan, zkillua
 ### Summary
 
 The `extendLoan` function in `DebitaV3Loan::extendLoan` has redundant time calculation logic that causes transaction reversions when borrowers attempt to extend loans near their deadline.
@@ -2284,308 +2930,7 @@ The calculation flow:
 
 Remove the unused `extendedTime` calculation as it serves no purpose and can cause legitimate loan extensions to fail.
 
-# Issue M-17: Attacker can replace all active borrow orders with malicious orders 
-
-Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/809 
-
-## Found by 
-VAD37, Vidus
-### Summary
-
-`DBOFactory:allActiveBorrowOrders` mapping will be used buy the Debita bot to match borrow orders with lend order.
-We found an attack which can replace the borrow orders addresses in the mapping with attackers malicious borrow orders addresses.
-The attack will lead to complete collapse of the protocol because there won't be any real borrow orders in the protocol.
-
-### Vulnerability Detail
-
-Attacker can create a borrow order with malicious erc721.
-The malicious erc721 will override the `transferFrom` function.
-`transferFrom` will be used to call `DBOImplementation:cancelOffer()`of the attacker borrow order.  Because the `transferFrom` function is called before the attackers borrow order is set, cancel attacker borrow order will delete the 0th user and set the last user to the 0th index.
-The attack can be repeated after every users borrow order to delete every user borrow order address in the mapping and collapse the protocol.
-
-### Attack Implementation
-
-Attacker creates a malicious erc721.
-Malicious erc721 will be used as a creator contract of  borrow order.
-Therefore in malicious erc721 the `onERC721Received` will be implemented. Because the creator needs a token to create borrow order.
-
-Malicious erc721 `transferFrom` will be overridden to cancel the attacker borrow order and transfer the tokens only in if `msg.sender` is `DBOFactory`.
-
-The attack is simple from now on:
-1. Malicious erc721 mints itself and creates borrow order with minted token as collateral.
-2. The borrow order sets the `DBOFactory:isBorrowOrderLegit` to `true` before the malicious erc721 `transferFrom` is called.
-3. Therefore the malicious erc721 can call the `cancelOffer()` and delete the 0th index of `allActiveBorrowOrders`.
-4. After the cancel in `transferFrom`, `super.transferFrom()` is called to transfer the malicious erc721.
-5. Now attackers borrow order has one erc721 token and it passes the ``require(balance >= _collateralAmount, "Invalid balance");` in `DBOFactory:createBorrowOrder()`.
-6. Attackers borrow order it is set to `allActiveBorrowOrders` and the 0th user is deleted successfully.
-7. The attack can be repeated after each user creation of borrow order twice to collapse the protocol. First calling to set the last active borrow order index to 0th index. And second time to delete the 0th index. 
-
-### Code Snippet
-
-Following test creates a borrower borrow order and implements attack to replace the borrower borrow order address in `allActiveBorrowOrders` mapping.
-
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-
-import "forge-std/Test.sol";
-import "forge-std/console.sol"; // Optional, for logging during tests
-
-import {DBOFactory} from "@contracts/DebitaBorrowOffer-Factory.sol";
-import {DBOImplementation} from "@contracts/DebitaBorrowOffer-Implementation.sol";
-import {DynamicData} from "../interfaces/getDynamicData.sol";
-import {IDBOFactory} from "./interfaces/IDBOFactory.sol";
-import {IDBOImplementation} from "./interfaces/IDBOImplementation.sol";
-
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
-
-contract MaliciousERC721 is ERC721 {
-
-    DynamicData public allDynamicData;
-    address factoryAddress;
-    address Alice;
-    uint receiptID = 1;
-    mapping(uint => string) private receiptData;
-
-    struct receiptInstance {
-        uint receiptID;
-        uint attachedNFT;
-        uint lockedAmount;
-        uint lockedDate;
-        uint decimals;
-        address vault;
-        address underlying;
-    }
-
-    // in constror set the factory contract address
-    constructor(address _factoryAddress) ERC721("MaliciousNFT", "MNFT") {
-        factoryAddress = _factoryAddress;
-    }
-
-    function mint(address to, uint256 id) public {
-        _safeMint(to, id);
-    }
-
-    // for DebitaBorrowOffer-Implementation.sol:105
-    function getDataByReceipt(uint _receiptID) public view returns (receiptInstance memory) {
-
-        receiptInstance memory instance = receiptInstance({
-                receiptID: _receiptID,
-                attachedNFT: 0,
-                lockedAmount: 0, 
-                lockedDate: 0,
-                decimals: 0,
-                vault: address(0x0),
-                underlying: address(0x0)
-        });
-
-        return instance;
-    }
-
-    // function for erc721 to recieve erc721
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes memory data
-    ) public returns (bytes4) {
-
-        return this.onERC721Received.selector;
-    }
-
-    // override transferFrom to call cancelOffer of malicious erc721 borrow order created in attack,
-    // and than transfer the tokens to pass the require 
-
-    function transferFrom(
-        address from,
-        address to,
-        uint256 tokenId
-    ) public override {
-
-        
-        if(msg.sender == factoryAddress){
-            IDBOImplementation(to).cancelOffer(); 
-            super.transferFrom(from, to, tokenId);
-        }
-    }
-
-    function attack() public {
-
-        allDynamicData = new DynamicData();
-
-        bool[] memory oraclesActivated = allDynamicData.getDynamicBoolArray(1);
-        uint[] memory ltvs = allDynamicData.getDynamicUintArray(1);
-        uint[] memory ratio = allDynamicData.getDynamicUintArray(1);
-
-        address[] memory acceptedPrinciples = allDynamicData
-            .getDynamicAddressArray(1);
-
-        address[] memory oraclesPrinciples = allDynamicData
-            .getDynamicAddressArray(1);
-
-        ratio[0] = 5e17;
-        oraclesActivated[0] = false;
-        ltvs[0] = 0;
-        acceptedPrinciples[0] = Alice;
-        oraclesPrinciples[0] = address(0x0);
-
-        IERC721(address(this)).approve(address(factoryAddress), receiptID);
-
-        // malicious erc721 creates a borrow order with malicious erc721
-        address borrowOrderAddress = IDBOFactory(factoryAddress).createBorrowOrder(
-            oraclesActivated,
-            ltvs,
-            1400,
-            864000,
-            acceptedPrinciples,
-            address(this),
-            true,
-            receiptID,
-            oraclesPrinciples,
-            ratio,
-            address(0x0),
-            1
-        );
-    }
-}
-
-// run test with: forge test --match-path test/vidus/MaliciousNFT.sol -vvv
-contract MaliciousNFTTest is Test, DynamicData {
-
-    DBOFactory public DBOFactoryContract;
-    DBOImplementation public BorrowOrder;
-    DynamicData public allDynamicData;
-
-    MaliciousERC721 maliciousERC721;
-    address borrower;
-    address attacker;
-
-    ERC20Mock public USDCContract;
-    address USDC;
-
-    function setUp() public {
-
-        borrower = makeAddr("borrower");
-        attacker = makeAddr("attacker");
-
-        USDCContract = new ERC20Mock();
-        USDC = address(USDCContract);
-
-        DBOImplementation borrowOrderImplementation = new DBOImplementation();
-        DBOFactoryContract = new DBOFactory(address(borrowOrderImplementation));
-        allDynamicData = new DynamicData();
-
-        maliciousERC721 = new MaliciousERC721(address(DBOFactoryContract));
-        //mint malicious erc721 to malicious erc721
-        maliciousERC721.mint(address(maliciousERC721), 1);
-
-    }
-
-    function testAttack() public {
-
-        createBorrowOrderWithBorrower();
-
-        // function will console address of borrowOrderAddress in allActiveBorrowOrders
-        console.log("Borrow order at index 0 before the attack:", DBOFactoryContract.allActiveBorrowOrders(0));
-
-        // attack
-        vm.prank(attacker);
-        maliciousERC721.attack();
-        vm.stopPrank();
-
-        // function will console address of borrow order address of malicious nft in allActiveBorrowOrders
-        console.log("Borrow order at index 0 after the attack:", DBOFactoryContract.allActiveBorrowOrders(0));
-
-    }
-
-    function createBorrowOrderWithBorrower() public {
-
-        // normal borrow order creation by borrower
-        bool[] memory oraclesActivated = allDynamicData.getDynamicBoolArray(1);
-        uint[] memory ltvs = allDynamicData.getDynamicUintArray(1);
-        uint[] memory ratio = allDynamicData.getDynamicUintArray(1);
-
-        address[] memory acceptedPrinciples = allDynamicData
-            .getDynamicAddressArray(1);
-
-        address[] memory oraclesPrinciples = allDynamicData
-            .getDynamicAddressArray(1);
-
-        ratio[0] = 5e17;
-        oraclesPrinciples[0] = address(0x0);
-        acceptedPrinciples[0] = makeAddr("Alice");
-        oraclesActivated[0] = false;
-        ltvs[0] = 0;
-
-        deal(USDC, borrower, 1000e18, false);
-
-        vm.startPrank(borrower);
-
-        USDCContract.approve(address(DBOFactoryContract), 11e18);
-        address borrowOrderAddress = DBOFactoryContract.createBorrowOrder(
-            oraclesActivated,
-            ltvs,
-            1400,
-            864000,
-            acceptedPrinciples,
-            USDC,
-            false,
-            0,
-            oraclesPrinciples,
-            ratio,
-            address(0x0),
-            10e18
-        );
-
-        vm.stopPrank();
-
-    }
-    
-}
-```
-
-Output:
-
-```solidity
-Borrow order at index 0 before the attack: 0x4f81992FCe2E1846dD528eC0102e6eE1f61ed3e2
-Borrow order at index 0 after the attack: 0xCB6f5076b5bbae81D7643BfBf57897E8E3FB1db9
-```
-
-The attacker successfully replace the 0th index in `allActiveBorrowOrders` with malicious erc721 borrow order address
-
-### Tool Used
-
-Manual Review
-
-### Lines of Concern
-
-https://github.com/sherlock-audit/2024-11-debita-finance-v3/blob/main/Debita-V3-Contracts/contracts/DebitaBorrowOffer-Factory.sol#L124-L144
-
-### Recommendation
-
-Set `isBorrowOrderLegit` to `true` after erc721`transferFrom`:
-```solidity
--       isBorrowOrderLegit[address(borrowOffer)] = true;
-        if (_isNFT) {
-            IERC721(_collateral).transferFrom(
-                msg.sender,
-                address(borrowOffer),
-                _receiptID
-            );
-        } else {
-            SafeERC20.safeTransferFrom(
-                IERC20(_collateral),
-                msg.sender,
-                address(borrowOffer),
-                _collateralAmount
-            );
-        }
-+       isBorrowOrderLegit[address(borrowOffer)] = true; 
-```
-
-# Issue M-18: DebitaIncentives::updateFunds will exit prematurely and not update whitelisted pairs causing loss of funds to lenders and borrowers 
+# Issue M-21: DebitaIncentives::updateFunds will exit prematurely and not update whitelisted pairs causing loss of funds to lenders and borrowers 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/870 
 
@@ -3212,13 +3557,12 @@ After applying the change, running the test case provided in the PoC will output
   borrowAmountPerEpoch:  5000000000000000000
 ```
 
-
-# Issue M-19: Previous owner can steal unclaimed bribes from new owner of veNFTVault 
+# Issue M-22: Previous owner can steal unclaimed bribes from new owner of veNFTVault 
 
 Source: https://github.com/sherlock-audit/2024-10-debita-judging/issues/875 
 
 ## Found by 
-0xc0ffEE, DenTonylifer, Flashloan44, Greese, KiroBrejka, VAD37, eeshenggoh, pepocpeter, xiaoming90
+0xc0ffEE, DenTonylifer, Flashloan44, Greese, KiroBrejka, VAD37, eeshenggoh, xiaoming90
 ### Summary
 
 Previous owner can steal unclaimed bribes from new owner of `veNFT`, because transfering ownership of `veNFT` does not change the manager (which can claim bribes, vote).
